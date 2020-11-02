@@ -1,88 +1,163 @@
-import { EventEmitter } from "events";
-import {
-  BROADCAST_CHANNEL,
-  MTNetInternalBus,
-  Events,
-  BusSendEvent,
-  BusFireEvent,
-} from "./internal-bus";
+import { MTNetLogger } from "./logger";
+import { Callprop, MTNetRouter } from "./router";
+import { v4 as uuid } from "uuid";
 
+export interface OnSettings {
+  executionOrder?: number;
+  id?: string;
+}
 export abstract class MTNetPluginBase {
-  private internalBus: MTNetInternalBus;
-  private selfEmitter: EventEmitter;
-  private channels: Set<string>;
-  constructor() {
-    this.selfEmitter = new EventEmitter();
-    this.channels = new Set();
+  private groups: Set<string> = new Set();
+  protected router: MTNetRouter;
+  protected logger: MTNetLogger;
+
+  private registeredCallbacks: Record<
+    string,
+    {
+      id: string;
+      executionOrder: number;
+      handler: (...args: unknown[]) => unknown;
+    }[]
+  > = {};
+
+  __setup(logger: MTNetLogger, router: MTNetRouter): void {
+    this.logger = logger;
+    this.router = router;
   }
 
-  setupInternalBus(internalBus: MTNetInternalBus): void {
-    this.internalBus = internalBus;
-    this.internalBus.emitter.on(Events.SEND, (data: BusSendEvent) => {
-      this.onSendEvent(data);
-    });
-    this.internalBus.emitter.on(Events.FIRE, (data: BusFireEvent) => {
-      this.onFireEvent(data);
-    });
-    this.subscribeToChannel(BROADCAST_CHANNEL);
+  addGroup(group: string): void {
+    this.groups.add(group);
   }
 
-  private onSendEvent(data: BusSendEvent): void {
-    if (!this.channels.has(data.channel)) return;
-    this.selfEmitter.emit(`${data.event}#:#${data.channel}`, ...data.data);
+  removeGroup(group: string): void {
+    this.groups.delete(group);
   }
 
-  private onFireEvent(data: BusFireEvent): void {
-    if (!this.channels.has(data.channel)) return;
-    this.selfEmitter.emit(
-      `${data.event}#:#${data.channel}`,
-      data.data,
-      data.id
-    );
-  }
-
-  protected subscribeToChannel(channel: string): void {
-    this.channels.add(channel);
-  }
-  protected unsubscribeFromChannel(channel: string): void {
-    this.channels.delete(channel);
-  }
-
-  protected onChannel(
-    event: string,
-    channel: string,
-    callback: (...args: unknown[]) => void | Promise<void>
-  ): void {
-    this.selfEmitter.on(`${event}#:#${channel}`, callback);
-  }
-
-  protected onBroadcast(
-    event: string,
-    callback: (...args: unknown[]) => void | Promise<void>
-  ): void {
-    this.selfEmitter.on(`${event}#:#${BROADCAST_CHANNEL}`, callback);
-  }
-
-  protected onChannelReturn(
-    event: string,
-    channel: string,
-    callback: (...args: unknown[]) => unknown
-  ): void {
-    this.selfEmitter.on(
-      `${event}#:#${channel}`,
-      async (data: unknown[], id: string) => {
-        const res = await callback(...data);
-        this.internalBus.fireResponce(id, res);
+  isInGroups(groups: string[]): boolean {
+    for (const group of groups) {
+      if (!this.groups.has(group)) {
+        return false;
       }
+    }
+    return true;
+  }
+
+  /**
+   * Subscribes to the event.
+   *
+   * @param callprop - event to subscribe on
+   * @param handler - handler fot the event
+   * @returns id - subscription id, which is needed to unsubscribe from the event
+   */
+  on(
+    event: string,
+    handler: (...args: unknown[]) => unknown,
+    settings: OnSettings = {}
+  ): string {
+    const callbackId = uuid();
+    if (!this.registeredCallbacks[event]) {
+      this.registeredCallbacks[event] = [];
+    }
+    this.registeredCallbacks[event].push({
+      id: callbackId,
+      handler,
+      executionOrder: settings?.executionOrder ?? 0,
+    });
+    return callbackId;
+  }
+
+  /**
+   * Subscribes to the event only once, after first call this subscription will be dropped automatically
+   *
+   * @param callprop - event to subscribe on
+   * @param handler - handler for the event
+   */
+  once(
+    event: string,
+    handler: (...args: unknown[]) => unknown,
+    settings: OnSettings = {}
+  ): void {
+    const id = uuid();
+    this.on(
+      event,
+      async (...args: unknown[]) => {
+        const res = await handler(...args);
+        setImmediate(() => {
+          this.off(id);
+        });
+        return res;
+      },
+      { ...settings, id }
     );
   }
 
-  protected send(event: string, channel: string, ...data: unknown[]): void {
-    this.internalBus.send(event, channel, data);
+  /**
+   *  Unsubscribes from the handler
+   *
+   * @param id - id of the handler
+   */
+  off(id: string): void {
+    const events = Object.keys(this.registeredCallbacks);
+    for (let i = 0; i < events.length; i++) {
+      const handlers = this.registeredCallbacks[events[i]];
+      const neededEventIndex = handlers.findIndex(
+        (handler) => handler.id === id
+      );
+      if (neededEventIndex === -1) continue;
+      this.registeredCallbacks[events[i]].splice(neededEventIndex, 1);
+    }
   }
-  protected broadcast(event: string, ...data: unknown[]): void {
-    this.internalBus.broadcastSend(event, data);
+
+  /**
+   * Just sends the message. Will NOT await its completion
+   *
+   * @param callprop - event to fire
+   * @param data - any args to pass to the event
+   */
+  send(callprop: Callprop, ...data: unknown[]): void {
+    this.router.getTargetFor(callprop).receive(callprop, data);
   }
+
+  /**
+   * Fires the event and awaits its returned result
+   *
+   * @param callprop - event to fire
+   * @param data - any args to pass to the event
+   * @returns - the result of the execution
+   */
+  async call<T>(
+    callprop: Callprop,
+    ...data: unknown[]
+  ): Promise<T | (T | T[])[]> {
+    return await this.router
+      .getTargetFor(callprop)
+      .receiveCall<T>(callprop, data);
+  }
+
+  receive(event: string, data: unknown[]): void {
+    if (!this.registeredCallbacks[event]) {
+      throw new Error(`Event ${event} is not registered on this plugin`);
+    }
+
+    this.registeredCallbacks[event].forEach((eventData) =>
+      eventData.handler(...data)
+    );
+  }
+
+  async receiveCall<T>(event: string, data: unknown[]): Promise<T[]> {
+    if (!this.registeredCallbacks[event]) {
+      throw new Error(`Event ${event} is not registered on this plugin`);
+    }
+
+    const res = await Promise.all(
+      this.registeredCallbacks[event].map((eventHandler) => {
+        return eventHandler.handler(...data);
+      })
+    );
+    return res as T[];
+  }
+
+  // ------------ PUBLIC API --------------
   /**
    * @description  This is called before start of the node
    * Should be used to initialize all async stuff

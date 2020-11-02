@@ -1,17 +1,16 @@
-import { MTNetInternalBus } from "./internal-bus";
 import { MTNetLogger } from "./logger";
 import { MTNetPluginManager } from "./plugin-manager";
+import { MTNetRouter } from "./router";
 
 export class MTNetNode {
-  private readonly internalBus: MTNetInternalBus;
   private readonly logger: MTNetLogger;
-
-  public readonly pluginManager: MTNetPluginManager;
+  private readonly router: MTNetRouter;
+  private readonly pluginManager: MTNetPluginManager;
 
   constructor() {
     this.logger = new MTNetLogger();
-    this.internalBus = new MTNetInternalBus(this.logger);
-    this.pluginManager = new MTNetPluginManager(this.internalBus);
+    this.router = new MTNetRouter(this);
+    this.pluginManager = new MTNetPluginManager(this);
   }
 
   async init(): Promise<void> {
@@ -21,5 +20,17 @@ export class MTNetNode {
 
   async start(): Promise<void> {
     await this.pluginManager.start();
+  }
+
+  getPluginManager(): MTNetPluginManager {
+    return this.pluginManager;
+  }
+
+  getLogger(): MTNetLogger {
+    return this.logger;
+  }
+
+  getRouter(): MTNetRouter {
+    return this.router;
   }
 }

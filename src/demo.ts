@@ -1,12 +1,23 @@
 import { MTNetNode } from "./index";
-import { DemoPlugin } from "./plugins/demo-plugin";
+import { MeshPlugin } from "./plugins/mesh.plugin";
+import { ShellCMDPlugin } from "./plugins/shellcmd.plugin";
 
 async function bootstrap() {
-  const tiiNode = new MTNetNode();
+  const mtnetnode = new MTNetNode();
 
-  tiiNode.pluginManager.addPlugin(new DemoPlugin());
-  await tiiNode.init();
-  await tiiNode.start();
+  const meshPlugin = new MeshPlugin({
+    host: "0.0.0.0",
+    port: 9898,
+    secret: "none",
+    connectTo: [],
+  });
+
+  const shellCommands = [];
+  const manager = mtnetnode.getPluginManager();
+  manager.addPlugins([new ShellCMDPlugin(shellCommands), meshPlugin]);
+
+  await mtnetnode.init();
+  await mtnetnode.start();
 }
 
 bootstrap().catch((err) => console.error(err));
