@@ -49,6 +49,16 @@ export class MeshPlugin extends MTNetPluginBase {
       socket.on("message", (payload: MessagePayload) => {
         const callprop = `#:${payload.groups.join(" ")}:${payload.event}`;
         this.router.getTargetFor(callprop).receive(callprop, payload.data);
+        this.clients
+          .filter((client) => !payload.receivers.includes(client.id))
+          .forEach((client) => {
+            client.emit("message", {
+              groups: payload.groups,
+              event: payload.event,
+              data: payload.data,
+              receivers: [...payload.receivers],
+            });
+          });
       });
       socket.on("call", (payload: CallPayload) => {
         // @todo process payload
