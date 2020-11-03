@@ -23,7 +23,9 @@ export interface MessagePayload {
   data: unknown[];
   receivers: string[];
 }
-export interface CallPayload extends MessagePayload {}
+export interface CallPayload extends MessagePayload {
+  senderId: string;
+}
 
 export class MeshPlugin extends MTNetPluginBase {
   private readonly httpServer: HttpServer;
@@ -45,7 +47,8 @@ export class MeshPlugin extends MTNetPluginBase {
     this.router.setupMeshPlugin(this);
     this.io.on("connection", (socket: IOServer.Socket) => {
       socket.on("message", (payload: MessagePayload) => {
-        // @todo process payload
+        const callprop = `#:${payload.groups.join(" ")}:${payload.event}`;
+        this.router.getTargetFor(callprop).receive(callprop, payload.data);
       });
       socket.on("call", (payload: CallPayload) => {
         // @todo process payload
@@ -79,13 +82,24 @@ export class MeshPlugin extends MTNetPluginBase {
       data,
       receivers: [this.id],
     };
-    this.io.sockets.emit("message", payload);
     this.clients.forEach((client) => client.emit("message", payload));
   }
 
-  _call<T>(
+  async _call<T>(
     groups: string[],
     event: string,
     data: unknown[]
-  ): Promise<T | (T | T[])[]> {}
+  ): Promise<T | (T | T[])[]> {
+    this.clients.forEach((client) => {
+      const payload: CallPayload = {
+        groups,
+        event,
+        data,
+        receivers: [this.id],
+        senderId: client.id,
+      };
+      client.emit("call", payload);
+    });
+    return [];
+  }
 }
